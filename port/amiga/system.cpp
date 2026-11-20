@@ -30,8 +30,6 @@
 /* the C++ runtime, FreeType and the game's recursion want more than 4 KB */
 extern "C" { unsigned long __stack = 262144; }
 
-static const char VERSTAG[] __attribute__((used)) = "$VER: Freegemas 1.0 (19.11.2026) AmigaOS RTG port";
-
 FgConfig g_fgConfig = { -1, FG_AUDIO_AUTO, 0, 0, 0, NULL, NULL, 0, 0, 0, 20, 0, 0, 0, 0, 0 };
 
 /* ================================================================ timer */

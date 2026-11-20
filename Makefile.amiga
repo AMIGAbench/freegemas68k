@@ -8,6 +8,8 @@
 CPU     ?= 68080
 OUT     := build/amiga/obj-$(CPU)
 PROG    := build/amiga/Freegemas$(if $(filter 68060,$(CPU)),060,080)
+VERSION ?= 1.0
+VDATE   ?= $(shell date +%-d.%-m.%Y)
 CXX     := m68k-amigaos-g++
 VASM    := vasmm68k_mot
 
@@ -41,6 +43,17 @@ $(OUT)/up_%.o: $(UP)/src/%.cpp | $(OUT)
 
 $(OUT)/%.o: port/amiga/%.cpp | $(OUT)
 	$(CXX) $(CXXFLAGS) -MMD -c $< -o $@
+
+# version string: program name per build, date of the build (version.o is rebuilt
+# when the date or the version changes)
+$(OUT)/version.o: port/amiga/version.cpp $(OUT)/vstamp | $(OUT)
+	$(CXX) $(CXXFLAGS) -DFG_PROGNAME=$(notdir $(PROG)) -DFG_VERSION=$(VERSION) -DFG_DATE=$(VDATE) -c $< -o $@
+
+$(OUT)/vstamp: FORCE | $(OUT)
+	@echo '$(notdir $(PROG)) $(VERSION) $(VDATE)' | cmp -s - $@ || echo '$(notdir $(PROG)) $(VERSION) $(VDATE)' > $@
+
+.PHONY: FORCE
+FORCE:
 
 # kern68k.s: plain 68k for both builds (assembled for the 060); blend080.s: AMMX
 $(OUT)/kern68k_s.o: port/amiga/kern68k.s | $(OUT)
