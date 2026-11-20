@@ -1,0 +1,59 @@
+# Amiga build of freegemas (AmigaOS 3.x, RTG). Run by tools/build.sh inside
+# the apollocrossdev docker image:  make -f Makefile.amiga CPU=68080|68060
+#
+# The C/C++ code is 68060 code in both builds: -m68080 code needs the Apollo
+# bit in every task that runs it (a Line-A guru otherwise). The 68080 build
+# differs only in its assembler kernels (FG_V080).
+
+CPU     ?= 68080
+OUT     := build/amiga/obj-$(CPU)
+PROG    := build/amiga/Freegemas$(if $(filter 68060,$(CPU)),060,080)
+CXX     := m68k-amigaos-g++
+VASM    := vasmm68k_mot
+
+UP      := upstream
+# game sources; the SDL-bound ones are replaced by port/amiga
+UPSRC   := $(filter-out $(addprefix $(UP)/src/,go_window.cpp go_image.cpp go_font.cpp go_sound.cpp \
+             go_music.cpp Util.cpp OptionsManager.cpp main.cpp),$(wildcard $(UP)/src/*.cpp))
+PORTSRC := $(wildcard port/amiga/*.cpp)
+ASMSRC  := port/amiga/kern68k.s $(if $(filter 68080,$(CPU)),port/amiga/blend080.s)
+
+OBJS    := $(patsubst $(UP)/src/%.cpp,$(OUT)/up_%.o,$(UPSRC)) \
+           $(patsubst port/amiga/%.cpp,$(OUT)/%.o,$(PORTSRC)) \
+           $(patsubst port/amiga/%.s,$(OUT)/%_s.o,$(ASMSRC))
+
+CXXFLAGS := -noixemul -m68060 -mhard-float -O2 -fomit-frame-pointer -fbbb=abcfhilmnprsz0 \
+            -fexcess-precision=fast -std=gnu++11 -fno-strict-aliasing \
+            -DAMIGA=1 $(if $(filter 68080,$(CPU)),-DFG_V080=1) \
+            -include port/amiga/include/fg_compat.h -Iport/amiga/include -Iport/amiga -I$(UP)/include \
+            -Wall -Wno-unused-parameter -Wno-misleading-indentation -Wno-narrowing -Wno-sign-compare
+VFLAGS  := -quiet -Fhunk -no-opt $(if $(filter 68080,$(CPU)),-m68080 -DFG_V080=1,-m68060)
+LDFLAGS := -noixemul -m68060 -Wl,-Map,$(PROG).map
+LIBS    := -lfreetype -lz -lm -lamiga
+
+all: $(PROG)
+
+$(PROG): $(OBJS)
+	$(CXX) $(LDFLAGS) -o $@ $(OBJS) $(LIBS)
+
+$(OUT)/up_%.o: $(UP)/src/%.cpp | $(OUT)
+	$(CXX) $(CXXFLAGS) -MMD -c $< -o $@
+
+$(OUT)/%.o: port/amiga/%.cpp | $(OUT)
+	$(CXX) $(CXXFLAGS) -MMD -c $< -o $@
+
+# kern68k.s: plain 68k for both builds (assembled for the 060); blend080.s: AMMX
+$(OUT)/kern68k_s.o: port/amiga/kern68k.s | $(OUT)
+	$(VASM) -quiet -Fhunk -no-opt -m68060 -o $@ $<
+
+$(OUT)/%_s.o: port/amiga/%.s | $(OUT)
+	$(VASM) $(VFLAGS) -o $@ $<
+
+$(OUT):
+	mkdir -p $@
+
+clean:
+	rm -rf build/amiga
+
+-include $(OBJS:.o=.d)
+.PHONY: all clean

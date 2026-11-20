@@ -1,0 +1,287 @@
+diff --git a/include/Board.h b/include/Board.h
+index 2782c18..2524db2 100644
+--- a/include/Board.h
++++ b/include/Board.h
+@@ -41,6 +41,9 @@ public:
+     /// Checks if there are matching horizontal and/or vertical groups
+     MultipleMatch check();
+ 
++    /// true if there is any line of three (as !check().empty(), without allocating)
++    bool hasMatch();
++
+     /// Checks if current Board.has any possible valid movement
+     vector<Coord> solutions();
+ 
+diff --git a/include/ParticleSystem.h b/include/ParticleSystem.h
+index 809cca8..d09ab02 100644
+--- a/include/ParticleSystem.h
++++ b/include/ParticleSystem.h
+@@ -21,7 +21,13 @@ struct Particle{
+ 
+     Particle(float angle, float distance, float size, int totalSteps, GoSDL::Image *img, SDL_Color color) :
+         mAngle(angle), mDistance(distance), mSize(size), mTotalSteps(totalSteps), mImage(img), mColor(color), mCurrentStep(0), mPosX(0), mPosY(0)
+-    { }
++    {
++        // The angle never changes: compute the direction once, not every frame
++        mCos = std::cos(mAngle * 3.141592 / 180);
++        mSin = std::sin(mAngle * 3.141592 / 180);
++        mHalfW = mImage->getWidth() / 2.f;
++        mHalfH = mImage->getHeight() / 2.f;
++    }
+ 
+     void update() {
+         if (mCurrentStep != mTotalSteps) {
+@@ -30,16 +36,18 @@ struct Particle{
+ 
+         float tempPos = Animacion::easeOutQuart(mCurrentStep, 0, 1, mTotalSteps);
+ 
++#ifndef AMIGA   // (mAlpha is never used: draw() passes 255)
+         if (tempPos >= lim) {
+             mAlpha = 255 * (1 - (tempPos - lim) / (1 - lim));
+         } else {
+             mAlpha = 255;
+         }
++#endif
+ 
+         mSizeCoef = mSize * (1 - tempPos);
+ 
+-        mPosX = tempPos * mDistance * std::cos(mAngle * 3.141592 / 180) - mImage->getWidth() * mSizeCoef / 2;
+-        mPosY = tempPos * mDistance * std::sin(mAngle * 3.141592 / 180) - mImage->getHeight() * mSizeCoef / 2;
++        mPosX = tempPos * mDistance * mCos - mHalfW * mSizeCoef;
++        mPosY = tempPos * mDistance * mSin - mHalfH * mSizeCoef;
+ 
+ 
+     }
+@@ -74,6 +82,8 @@ struct Particle{
+     float mPosY;
+ 
+     float mSizeCoef;
++
++    float mCos, mSin, mHalfW, mHalfH;
+ };
+ 
+ 
+@@ -108,7 +118,11 @@ public:
+         {
+             mParticleVector.push_back(Particle(getRandomInt(0, 360),
+                                     getRandomFloat(0, 1) * mDistance,
++#ifdef AMIGA
++                                    (getRandomFloat(0, mScale) + 1) * 0.5f,   // (Amiga: half the start size)
++#else
+                                     getRandomFloat(0, mScale) + 1,
++#endif
+                                     getRandomFloat(0.1, 1) * mTotalSteps,
+                                     (rand() > RAND_MAX / 2 ? imgParticle1 : imgParticle2),
+                                     mColor));
+diff --git a/include/Util.h b/include/Util.h
+index 6b11899..23171ea 100644
+--- a/include/Util.h
++++ b/include/Util.h
+@@ -9,4 +9,8 @@ std::string getPrefPath();
+ float getRandomFloat(float a, float b);
+ int getRandomInt (int min, int max) ;
+ 
++#ifdef AMIGA
++unsigned getRandomSeed();
++#endif
++
+ #endif
+\ No newline at end of file
+diff --git a/include/go_drawingqueue.h b/include/go_drawingqueue.h
+index b03636d..8ce02e5 100644
+--- a/include/go_drawingqueue.h
++++ b/include/go_drawingqueue.h
+@@ -21,6 +21,8 @@
+ #define _DRAWINGQUEUE_H_
+ 
+ #include <map>
++#include <vector>
++#include <algorithm>
+ #include <SDL3/SDL.h>
+ 
+ #include "log.h"
+@@ -37,6 +39,42 @@ namespace GoSDL {
+     };
+ 
+ 
++#ifdef AMIGA
++    /**
++     * Amiga: a vector instead of a multimap -- no heap node per draw call.
++     * Window::gameLoop() calls sortByDepth() (stable, so equal depths keep the
++     * order of the draw calls, as in the multimap) before it iterates.
++     */
++    typedef std::pair<float, DrawingQueueOperation> DrawingQueueEntry;
++
++    class DrawingQueue : private std::vector<DrawingQueueEntry>
++    {
++    public:
++        DrawingQueue() { reserve(512); }
++
++        void draw(float z, DrawingQueueOperation operation)
++        {
++            push_back(DrawingQueueEntry(z, operation));
++        }
++
++    private:
++        // insertion sort: stable, no allocation, fast on the nearly sorted queue
++        void sortByDepth()
++        {
++            DrawingQueueEntry * a = data();
++            for (size_t i = 1, n = size(); i < n; ++i) {
++                if (!(a[i].first < a[i - 1].first)) continue;
++                DrawingQueueEntry e = a[i];
++                size_t j = i;
++                while (j > 0 && e.first < a[j - 1].first) { a[j] = a[j - 1]; --j; }
++                a[j] = e;
++            }
++        }
++        friend class Window;
++    };
++
++    typedef std::vector<DrawingQueueEntry>::const_iterator DrawingQueueIterator;
++#else
+     /**
+      * Represents a drawing queue, where the Drawable objects will be drawn
+      * depending on their depth (which is the key of the map).
+@@ -59,6 +97,8 @@ namespace GoSDL {
+     // Iterator for the DrawingQueue
+     typedef std::multimap<float, DrawingQueueOperation>::const_iterator DrawingQueueIterator;
+ 
++#endif
++
+ }
+ 
+ #endif /* _DRAWINGQUEUE_H_ */
+diff --git a/include/go_window.h b/include/go_window.h
+index c52682e..baa9a14 100644
+--- a/include/go_window.h
++++ b/include/go_window.h
+@@ -139,7 +139,11 @@ namespace GoSDL {
+ #endif
+ 
+         // Process game logic, drawing and rendering
++#ifdef AMIGA
++        void gameLoop(int steps = 1);   // (steps > 1: catch-up of the game logic)
++#else
+         void gameLoop();
++#endif
+ 
+         /// Running flag
+         bool mShouldRun;
+diff --git a/src/Board.cpp b/src/Board.cpp
+index bcadf25..142a0e8 100644
+--- a/src/Board.cpp
++++ b/src/Board.cpp
+@@ -1,4 +1,5 @@
+ #include "Board.h"
++#include "Util.h"
+ 
+ #include <cstdlib>
+ #include <ctime>
+@@ -13,7 +14,11 @@ Board::Board()
+ 
+ void Board::generate()
+ {
++#ifdef AMIGA
++    std::srand(getRandomSeed());   // (fixed with SEED for reproducible test runs)
++#else
+     std::srand((unsigned int) time(0));
++#endif
+ 
+     bool repeat = false;
+ 
+@@ -68,7 +73,7 @@ vector<Coord> Board::solutions()
+ {
+     vector<Coord> resultados;
+ 
+-    if(!check().empty()){
++    if(hasMatch()){
+         resultados.push_back(Coord(-1,-1));
+         return resultados;
+     }
+@@ -87,7 +92,7 @@ vector<Coord> Board::solutions()
+             // Cambiar con superior y check
+             if(y > 0){
+                 temp.swap(x,y, x,y-1);
+-                if(!temp.check().empty()){
++                if(temp.hasMatch()){
+                     resultados.push_back(Coord(x,y));
+                 }
+                 temp.swap(x,y, x,y-1);
+@@ -96,7 +101,7 @@ vector<Coord> Board::solutions()
+             // Cambiar con inferior y check
+             if(y < 7){
+                 temp.swap(x, y, x, y+1);
+-                if(!temp.check().empty()){
++                if(temp.hasMatch()){
+                     resultados.push_back(Coord(x,y));
+                 }
+                 temp.swap(x, y, x, y+1);
+@@ -105,7 +110,7 @@ vector<Coord> Board::solutions()
+             // Cambiar con celda izquierda y check
+             if(x > 0){
+                 temp.swap(x, y, x - 1, y);
+-                if(!temp.check().empty()){
++                if(temp.hasMatch()){
+                     resultados.push_back(Coord(x,y));
+                 }
+                 temp.swap(x, y, x - 1, y);
+@@ -114,7 +119,7 @@ vector<Coord> Board::solutions()
+             // Cambiar con celda derecha y check
+             if(x < 7){
+                 temp.swap(x, y, x + 1, y);
+-                if(!temp.check().empty()){
++                if(temp.hasMatch()){
+                     resultados.push_back(Coord(x,y));
+                 }
+                 temp.swap(x, y, x + 1, y);
+@@ -128,6 +133,19 @@ vector<Coord> Board::solutions()
+ 
+ }
+ 
++bool Board::hasMatch()
++{
++    for (int y = 0; y < 8; ++y)
++        for (int x = 0; x < 6; ++x)
++            if (squares[x][y] != sqEmpty && squares[x][y] == squares[x + 1][y] && squares[x][y] == squares[x + 2][y])
++                return true;
++    for (int x = 0; x < 8; ++x)
++        for (int y = 0; y < 6; ++y)
++            if (squares[x][y] != sqEmpty && squares[x][y] == squares[x][y + 1] && squares[x][y] == squares[x][y + 2])
++                return true;
++    return false;
++}
++
+ MultipleMatch Board::check()
+ {
+     //lDEBUG << "Checking board...";
+diff --git a/src/GameBoard.cpp b/src/GameBoard.cpp
+index 44df2c6..e0f7f8d 100644
+--- a/src/GameBoard.cpp
++++ b/src/GameBoard.cpp
+@@ -648,7 +648,11 @@ void GameBoard::createFloatingScores()
+         for(size_t i = 0, s = m.size(); i < s; ++i)
+         {
+             mParticleSet.emplace_back(ParticleSystem(&mImgParticle1, &mImgParticle2,
++#ifdef AMIGA
++                15, 50,     // (Amiga: 15 particles per gem instead of 50 -- less blending)
++#else
+                 50, 50,
++#endif
+                 241 + m[i].x * 65 + 32,
+                 41 + m[i].y * 65 + 32, 60, 0.5));
+ 
+diff --git a/src/GameIndicators.cpp b/src/GameIndicators.cpp
+index 86af886..cbb9acc 100644
+--- a/src/GameIndicators.cpp
++++ b/src/GameIndicators.cpp
+@@ -98,7 +98,8 @@ void GameIndicators::updateTime (double time)
+     mRemainingTime = time;
+ 
+     // Only recreate the tiem string if it's changed
+-    if (mRemainingTime >= 0 && mRemainingTime != mRemainingTimePrevious)
++    // (whole seconds: the time is fractional and differs every frame)
++    if (mRemainingTime >= 0 && (int) mRemainingTime != (int) mRemainingTimePrevious)
+     {
+         int minutes = int(mRemainingTime / 60);
+         int seconds = int(mRemainingTime - minutes * 60);
